@@ -26,7 +26,7 @@ import glob
 import random
 from skimage import data, exposure, img_as_float
 import matplotlib.pyplot as plt
-from Network.Network import HomographyModel
+from Network.Network import Supervised_HomographyModel, Unsupervised_HomographyModel
 from Misc.MiscUtils import *
 from Misc.DataUtils import *
 import numpy as np
@@ -44,7 +44,9 @@ from Misc.TFSpatialTransformer import *
 sys.dont_write_bytecode = True
 
 patch_size = 32
-def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize):
+
+
+def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize, ModelType):
     """
     Inputs: 
     BasePath - Path to COCO folder without "/" at the end
@@ -58,9 +60,11 @@ def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize):
     I1Batch - Batch of images
     LabelBatch - Batch of one-hot encoded labels 
     """
+    
     I1Batch = []
     LabelBatch = []
-
+    CornerBatch = []
+    I2Batch = []
     ImageNum = 0
     while ImageNum < MiniBatchSize:
         # Generate random image
@@ -76,22 +80,16 @@ def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize):
         # I1 = img
         # if(ImageSize[2] == 3):
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            
+
         # I1 = (I1 - np.mean(I1))/255
 
         # generate random patch (square)
         r = 16
 
         img = (img-np.mean(img))/255
-        # if(img.shape[1]-r-patchSize) > r+1 and (img.shape[0]-r-patchSize) > r+1:
-        #     x = np.random.randint(r, img.shape[1]-r-patchSize)
-        #     y = np.random.randint(r, img.shape[0]-r-patchSize)
-        # else:
-        #     ImageNum = ImageNum - 1
-        #     continue
         rand_x = np.random.randint(r, img.shape[1]-r-patch_size)
         rand_y = np.random.randint(r, img.shape[0]-r-patch_size)
-        
+
         point1 = [rand_x, rand_y]
         point2 = [rand_x + patch_size, rand_y]
         point3 = [rand_x + patch_size, rand_y + patch_size]
@@ -103,23 +101,25 @@ def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize):
         dst = []
         for i in range(len(src)):
             rand_pertub = [src[i][0] + r *
-                           np.cos(theta), src[i][1]+r*np.sin(theta)]
+                        np.cos(theta), src[i][1]+r*np.sin(theta)]
             dst.append(rand_pertub)
-        # dst = np.array(dst)
+
         H = cv2.getPerspectiveTransform(np.float32(src), np.float32(dst))
         H_inv = np.linalg.inv(H)
-        img_warp = cv2.warpPerspective(img_gray, H_inv, (img_gray.shape[1], img_gray.shape[0]))
+        img_warp = cv2.warpPerspective(
+            img_gray, H_inv, (img_gray.shape[1], img_gray.shape[0]))
         patch_1 = img_gray[rand_y:rand_y+patch_size, rand_x:rand_x+patch_size]
         patch_2 = img_warp[rand_y:rand_y+patch_size, rand_x:rand_x+patch_size]
         patch_stack = np.dstack((patch_1, patch_2))
-        # cv2.imshow('r', I1_warp)
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
         H4pt = np.subtract(dst, src)
         I1Batch.append(patch_stack)
         LabelBatch.append(H4pt.reshape(8,))
-
-    return I1Batch, LabelBatch
+        CornerBatch.append(np.float32(src))
+        I2Batch.append(np.float32(patch_2.reshape(patch_size, patch_size, 1)))
+    if ModelType == 'Sup':
+        return I1Batch, LabelBatch
+    elif ModelType == 'Unsup':
+        return I1Batch, CornerBatch, I2Batch
 
 
 def PrettyPrint(NumEpochs, DivTrain, MiniBatchSize, NumTrainSamples, LatestFile):
@@ -158,7 +158,17 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
     Saves Trained network in CheckPointPath and Logs to LogsPath
     """
     # Predict output with forward pass
-    H4pt = HomographyModel(ImgPH, ImageSize, MiniBatchSize)
+    if ModelType == 'Sup':
+        H4pt = Supervised_HomographyModel(ImgPH)
+    elif ModelType == 'Unsup':
+        CornerPH = tf.placeholder(tf.float32, shape=(MiniBatchSize, 4, 2))
+        I2PH = tf.placeholder(tf.float32, shape=(
+            MiniBatchSize, patch_size, patch_size, 1))
+        pred_I2, I2 = Unsupervised_HomographyModel(
+            ImgPH, CornerPH, I2PH, ImageSize, MiniBatchSize)
+    else:
+        print('ERROR: Unknown ModelType !!!')
+        sys.exit()
 
     with tf.name_scope('Loss'):
         ###############################################
@@ -166,7 +176,10 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
         ###############################################
         if ModelType == 'Sup':
             # L2-loss
-            loss = tf.sqrt(tf.reduce_sum((tf.squared_difference(H4pt,LabelPH))))
+            loss = tf.sqrt(tf.reduce_sum(
+                (tf.squared_difference(H4pt, LabelPH))))
+        elif ModelType == 'Unsup':
+            loss = tf.reduce_mean(tf.abs(pred_I2 - I2))
 
     with tf.name_scope('Adam'):
         ###############################################
@@ -199,34 +212,66 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
 
         # Tensorboard
         Writer = tf.summary.FileWriter(LogsPath, graph=tf.get_default_graph())
+        if ModelType == 'Sup':
+            for Epochs in tqdm(range(StartEpoch, NumEpochs)):
+                NumIterationsPerEpoch = int(
+                    NumTrainSamples/MiniBatchSize/DivTrain)
+                for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
+                    I1Batch, LabelBatch = GenerateBatch(
+                        BasePath, DirNamesTrain, ImageSize, MiniBatchSize, ModelType)
+                    FeedDict = {ImgPH: I1Batch, LabelPH: LabelBatch}
+                    _, LossThisBatch, Summary = sess.run(
+                        [Optimizer, loss, MergedSummaryOP], feed_dict=FeedDict)
 
-        for Epochs in tqdm(range(StartEpoch, NumEpochs)):
-            NumIterationsPerEpoch = int(NumTrainSamples/MiniBatchSize/DivTrain)
-            for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
-                I1Batch, LabelBatch = GenerateBatch(
-                    BasePath, DirNamesTrain, ImageSize, MiniBatchSize)
-                FeedDict = {ImgPH: I1Batch, LabelPH: LabelBatch}
-                _, LossThisBatch, Summary = sess.run(
-                    [Optimizer, loss, MergedSummaryOP], feed_dict=FeedDict)
+                    # Save checkpoint every some SaveCheckPoint's iterations
+                    # if PerEpochCounter % SaveCheckPoint == 0:
+                    #     # Save the Model learnt in this epoch
+                    #     SaveName = CheckPointPath + \
+                    #         str(Epochs) + 'a' + str(PerEpochCounter) + 'model.ckpt'
+                    #     Saver.save(sess,  save_path=SaveName)
+                    #     print('\n' + SaveName + ' Model Saved...')
 
-                # Save checkpoint every some SaveCheckPoint's iterations
-                # if PerEpochCounter % SaveCheckPoint == 0:
-                #     # Save the Model learnt in this epoch
-                #     SaveName = CheckPointPath + \
-                #         str(Epochs) + 'a' + str(PerEpochCounter) + 'model.ckpt'
-                #     Saver.save(sess,  save_path=SaveName)
-                #     print('\n' + SaveName + ' Model Saved...')
+                    # Tensorboard
+                    Writer.add_summary(
+                        Summary, Epochs*NumIterationsPerEpoch + PerEpochCounter)
+                    # If you don't flush the tensorboard doesn't update until a lot of iterations!
+                    Writer.flush()
 
-                # Tensorboard
-                Writer.add_summary(
-                    Summary, Epochs*NumIterationsPerEpoch + PerEpochCounter)
-                # If you don't flush the tensorboard doesn't update until a lot of iterations!
-                Writer.flush()
+                # Save model every epoch
+                SaveName = CheckPointPath + ModelType + '/' + str(Epochs) + 'model.ckpt'
+                Saver.save(sess, save_path=SaveName)
+                print('\n' + SaveName + ' Model Saved...')
 
-            # Save model every epoch
-            SaveName = CheckPointPath + str(Epochs) + 'model.ckpt'
-            Saver.save(sess, save_path=SaveName)
-            print('\n' + SaveName + ' Model Saved...')
+        elif ModelType == 'Unsup':
+            for Epochs in tqdm(range(StartEpoch, NumEpochs)):
+                NumIterationsPerEpoch = int(
+                    NumTrainSamples/MiniBatchSize/DivTrain)
+                for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
+                    PatchBatch, CornerBatch, I2Batch = GenerateBatch(
+                        BasePath, DirNamesTrain, ImageSize, MiniBatchSize, ModelType)
+                    FeedDict = {ImgPH: PatchBatch,
+                                CornerPH: CornerBatch, I2PH: I2Batch}
+                    _, LossThisBatch, Summary = sess.run(
+                        [Optimizer, loss, MergedSummaryOP], feed_dict=FeedDict)
+
+                    # Save checkpoint every some SaveCheckPoint's iterations
+                    # if PerEpochCounter % SaveCheckPoint == 0:
+                    #     # Save the Model learnt in this epoch
+                    #     SaveName = CheckPointPath + \
+                    #         str(Epochs) + 'a' + str(PerEpochCounter) + 'model.ckpt'
+                    #     Saver.save(sess,  save_path=SaveName)
+                    #     print('\n' + SaveName + ' Model Saved...')
+
+                    # Tensorboard
+                    Writer.add_summary(
+                        Summary, Epochs*NumIterationsPerEpoch + PerEpochCounter)
+                    # If you don't flush the tensorboard doesn't update until a lot of iterations!
+                    Writer.flush()
+
+                # Save model every epoch
+                SaveName = CheckPointPath + ModelType + '/' + str(Epochs) + 'model.ckpt'
+                Saver.save(sess, save_path=SaveName)
+                print('\n' + SaveName + ' Model Saved...')
 
 
 def main():
@@ -242,7 +287,8 @@ def main():
                         help='Base path of images, Default:/home/bernard/CMSC733/proj_1/Phase2/Data/')
     Parser.add_argument('--CheckPointPath', default='../Checkpoints/',
                         help='Path to save Checkpoints, Default: ../Checkpoints/')
-    Parser.add_argument('--ModelType', default='Sup', help='Model type, Supervised or Unsupervised? Choose from Sup and Unsup, Default:Unsup')
+    Parser.add_argument('--ModelType', default='Unsup',
+                        help='Model type, Supervised or Unsupervised? Choose from Sup and Unsup, Default:Unsup')
     Parser.add_argument('--NumEpochs', type=int, default=30,
                         help='Number of Epochs to Train for, Default:30')
     Parser.add_argument('--DivTrain', type=int, default=1,
@@ -280,8 +326,10 @@ def main():
 
     # Define PlaceHolder variables for Input and Predicted output
     tf.compat.v1.disable_eager_execution()
-    ImgPH = tf.compat.v1.placeholder(tf.float32, shape=(MiniBatchSize, ImageSize[0], ImageSize[1], ImageSize[2]))
-    LabelPH = tf.compat.v1.placeholder(tf.float32, shape=(MiniBatchSize, NumClasses)) # OneHOT labels
+    ImgPH = tf.compat.v1.placeholder(tf.float32, shape=(
+        MiniBatchSize, ImageSize[0], ImageSize[1], ImageSize[2]))
+    LabelPH = tf.compat.v1.placeholder(tf.float32, shape=(
+        MiniBatchSize, NumClasses))  # OneHOT labels
 
     TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, ImageSize,
                    NumEpochs, MiniBatchSize, SaveCheckPoint, CheckPointPath,
