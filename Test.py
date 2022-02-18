@@ -41,8 +41,9 @@ from Misc.TFSpatialTransformer import *
 
 # Don't generate pyc codes
 sys.dont_write_bytecode = True
-patch_size = 32
-
+patch_size = 128
+# generate random patch (square)
+r = 32
 
 def SetupAll(BasePath):
     """
@@ -53,7 +54,7 @@ def SetupAll(BasePath):
     DataPath - Paths of all images where testing will be run on
     """
     # Image Input Shape
-    ImageSize = [32, 32, 2]
+    ImageSize = [patch_size, patch_size, 2]
     DataPath = []
     NumImages = len(glob.glob(BasePath+'*.jpg'))
     SkipFactor = 1
@@ -88,14 +89,12 @@ def ReadImages(BasePath):
     ##########################################################################
 
     img = np.float32(I1)
+    img = cv2.resize(img, (240, 320))
     img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
     # I1 = (I1 - np.mean(I1))/255
 
-    # generate random patch (square)
-    r = 16
-
-    img = (img-np.mean(img))/255
+    img_gray = (img_gray-np.mean(img_gray))/255
     rand_x = np.random.randint(r, img.shape[1]-r-patch_size)
     rand_y = np.random.randint(r, img.shape[0]-r-patch_size)
     
@@ -120,8 +119,10 @@ def ReadImages(BasePath):
     patch_2 = img_warp[rand_y:rand_y+patch_size, rand_x:rand_x+patch_size]
     patch_stack = np.dstack((patch_1, patch_2))
     H4pt = np.subtract(dst, src)
-    
-    return patch_stack, H4pt, src, dst, I1, patch_2
+    src = np.float32(src)
+    patch_1 = np.float32(patch_1.reshape(patch_size, patch_size, 1))
+    patch_2 = np.float32(patch_2.reshape(patch_size, patch_size, 1))
+    return patch_stack, H4pt, src, dst, I1, patch_1, patch_2
                 
 
 def TestSupervised(ImgPH, ImageSize, ModelPath, DataPath):
@@ -136,7 +137,7 @@ def TestSupervised(ImgPH, ImageSize, ModelPath, DataPath):
     Predictions written to ./TxtFiles/PredOut.txt
     """
     
-    patch_stack, H4pt, src, dst, img_orig, _ = ReadImages(DataPath)
+    patch_stack, H4pt, src, dst, img_orig, _, _ = ReadImages(DataPath)
 
     # Predict output with forward pass, MiniBatchSize for Test is 1
     H4pt_pred = Supervised_HomographyModel(ImgPH, ImageSize, 1)
@@ -149,7 +150,7 @@ def TestSupervised(ImgPH, ImageSize, ModelPath, DataPath):
         Saver.restore(sess, ModelPath)
         print('Number of parameters in this model are %d ' % np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()]))
         
-        Img=np.array(patch_stack).reshape(1,32,32,2)
+        Img=np.array(patch_stack).reshape(1, patch_size, patch_size,2)
         FeedDict = {ImgPH: Img}
         Predicted = sess.run(H4pt_pred,FeedDict)
 
@@ -165,28 +166,28 @@ def TestSupervised(ImgPH, ImageSize, ModelPath, DataPath):
 
 
 def TestUnsupervised(ImgPH, ImageSize, ModelPath, DataPath):
-    patch_stack, H4pt, src, dst, img_orig, patch2 = ReadImages(DataPath)
+    
     CornerPH = tf.placeholder(tf.float32, shape=(1,4,2))
-    I2PH = tf.placeholder(tf.float32, shape=(patch_size, patch_size,1))
+    patch1PH = tf.placeholder(tf.float32, shape=(1, patch_size, patch_size,1))
+    patch2PH = tf.placeholder(tf.float32, shape=(1, patch_size, patch_size,1))
 
     # Predict output with forward pass, MiniBatchSize for Test is 1
-    H4pt_pred = Unsupervised_HomographyModel(ImgPH, CornerPH, I2PH, ImageSize, 1)
-
+    pred_I2, I2, pred_H4pt = Unsupervised_HomographyModel(ImgPH, CornerPH, patch1PH, patch2PH, ImageSize, 1)
     # Setup Saver
     Saver = tf.train.Saver()
 
-    Img=np.array(patch_stack).reshape(1,patch_size, patch_size,2)
-    corner =np.array(src).reshape(1, 4, 2)
-    I2 = np.array(patch2).reshape(patch_size, patch_size, 1)
     with tf.Session() as sess:
         Saver.restore(sess, ModelPath)
         print('Number of parameters in this model are %d ' % np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()]))
-        
-        FeedDict = {ImgPH: Img, CornerPH: corner, I2PH: I2}
-        Predicted = sess.run(H4pt_pred,FeedDict)
+        patch_stack, H4pt, src, dst, img_orig, patch1, patch2 = ReadImages(DataPath)
+        Img=np.array(patch_stack).reshape(1,patch_size, patch_size,2)
+        corner =np.array(src).reshape(1, 4, 2)
+        patch1 = np.array(patch1).reshape(1, patch_size, patch_size, 1)
+        patch2 = np.array(patch2).reshape(1, patch_size, patch_size, 1)
+        FeedDict = {ImgPH: Img, CornerPH: corner, patch1PH: patch1, patch2PH: patch2}
+        Predicted = sess.run(pred_H4pt, FeedDict)
 
     src_new=src+Predicted.reshape(4,2)
-    H4pt_new=dst-src_new
     
     cv2.polylines(img_orig,np.int32([src]),True,(0,255,0), 3)
     cv2.polylines(img_orig,np.int32([dst]),True,(255,0,0), 5)
@@ -228,11 +229,11 @@ def main():
     Parser.add_argument('--ModelPath', dest='ModelPath', default='/home/bernard/CMSC733/proj_1/Phase2/Checkpoints/', help='Path to load latest model from, Default:ModelPath')
     Parser.add_argument('--BasePath', dest='BasePath', default='/home/bernard/CMSC733/proj_1/Phase2/Data/Val/', help='Path to load images from, Default:BasePath')
     Parser.add_argument('--LabelsPath', dest='LabelsPath', default='./TxtFiles/LabelsTest.txt', help='Path of labels file, Default:./TxtFiles/LabelsTest.txt')
-    Parser.add_argument('--ModelType', default='Sup',
+    Parser.add_argument('--ModelType', default='Unsup',
                         help='Model type, Supervised or Unsupervised? Choose from Sup and Unsup, Default:Unsup')
     Args = Parser.parse_args()
     ModelType = Args.ModelType
-    ModelPath = Args.ModelPath + str(ModelType)+ '/29model.ckpt'
+    ModelPath = Args.ModelPath + str(ModelType)+ '/19model.ckpt'
     BasePath = Args.BasePath
     LabelsPath = Args.LabelsPath
 
@@ -240,13 +241,16 @@ def main():
     ImageSize, DataPath = SetupAll(BasePath)
 
     # Define PlaceHolder variables for Input and Predicted output
-    ImgPH = tf.placeholder('float', shape=(1, 32, 32, 2))
+    ImgPH = tf.placeholder('float', shape=(1, patch_size, patch_size, 2))
 
     # LabelsPathPred = './TxtFiles/PredOut.txt' # Path to save predicted labels
-
-    TestSupervised(ImgPH, ImageSize, ModelPath, BasePath)
-    # TestUnsupervised(ImgPH, ImageSize, ModelPath, BasePath)
-
+    if ModelType == 'Sup':
+        TestSupervised(ImgPH, ImageSize, ModelPath, BasePath)
+    elif ModelType == 'Unsup':    
+        TestUnsupervised(ImgPH, ImageSize, ModelPath, BasePath)
+    else:
+        print("ERROR: Unknown ModelType !!!")
+        sys.exit()
     # Plot Confusion Matrix
     # LabelsTrue, LabelsPred = ReadLabels(LabelsPath, LabelsPathPred)
     # ConfusionMatrix(LabelsTrue, LabelsPred)
