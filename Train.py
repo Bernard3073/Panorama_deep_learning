@@ -105,7 +105,7 @@ def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize, ModelType):
         # Add any standardization or data augmentation here!
         ##########################################################
         img = np.float32(cv2.imread(RandImageName))
-        # img = cv2.resize(img, (240, 320))
+        img = cv2.resize(img, (240, 320))
         # I1 = img
         # if(ImageSize[2] == 3):
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -232,15 +232,11 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
         ###############################################
         # Fill your optimizer of choice here!
         ###############################################
-        if ModelType == 'Sup':
-            Optimizer = tf.train.AdamOptimizer(
-                learning_rate=1e-3).minimize(loss)
-        elif ModelType == 'Unsup':
-            Optimizer = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(loss)
-            # Optimizer = tf.train.AdamOptimizer(
-            #     learning_rate=0.0001, beta1=0.9, beta2=0.999, epsilon=1e-08)
-            # grad = Optimizer.compute_gradients(loss)
-            # Optimizer = Optimizer.minimize(loss)
+        # if ModelType == 'Sup':
+        #     Optimizer = tf.train.AdamOptimizer(learning_rate=1e-3).minimize(loss)
+        # elif ModelType == 'Unsup':
+        #     Optimizer = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(loss)
+        Optimizer = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(loss)
 
     # Tensorboard
     # Create a summary to monitor loss tensor
@@ -278,14 +274,6 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
                     FeedDict = {ImgPH: StackBatch, LabelPH: LabelBatch}
                     _, LossThisBatch, Summary = sess.run(
                         [Optimizer, loss, MergedSummaryOP], feed_dict=FeedDict)
-
-                    # Save checkpoint every some SaveCheckPoint's iterations
-                    # if PerEpochCounter % SaveCheckPoint == 0:
-                    #     # Save the Model learnt in this epoch
-                    #     SaveName = CheckPointPath + \
-                    #         str(Epochs) + 'a' + str(PerEpochCounter) + 'model.ckpt'
-                    #     Saver.save(sess,  save_path=SaveName)
-                    #     print('\n' + SaveName + ' Model Saved...')
                     appendLoss.append(LossThisBatch)
                     # Tensorboard
                     Writer.add_summary(
@@ -302,6 +290,15 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
                 LossOverEpochs = np.vstack(
                     (LossOverEpochs, [Epochs, np.mean(appendLoss)]))
                 tf.summary.scalar('LossOverEpochs', np.mean(appendLoss))
+            plt.xlim(0, 30)
+            plt.xlabel('Epoch')
+            plt.ylabel('Loss')
+            plt.plot(LossOverEpochs[:, 0], LossOverEpochs[:, 1])
+            if not os.path.exists('Graphs/Sup/train/'):
+                os.makedirs('Graphs/Sup/train/')
+            plt.savefig('Graphs/Sup/train/lossEpochs'+str(Epochs)+'.png')
+            # plt.show()
+            plt.close()
 
         elif ModelType == 'Unsup':
             for Epochs in tqdm(range(StartEpoch, NumEpochs)):
@@ -333,7 +330,7 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
                 LossOverEpochs = np.vstack(
                     (LossOverEpochs, [Epochs, np.mean(appendLoss)]))
                 tf.summary.scalar('LossOverEpochs', np.mean(appendLoss))
-            plt.xlim(0, 20)
+            plt.xlim(0, 30)
             plt.xlabel('Epoch')
             plt.ylabel('Loss')
             plt.plot(LossOverEpochs[:, 0], LossOverEpochs[:, 1])
@@ -359,7 +356,7 @@ def main():
                         help='Path to save Checkpoints, Default: ../Checkpoints/')
     Parser.add_argument('--ModelType', default='Sup',
                         help='Model type, Supervised or Unsupervised? Choose from Sup and Unsup, Default:Unsup')
-    Parser.add_argument('--NumEpochs', type=int, default=20,
+    Parser.add_argument('--NumEpochs', type=int, default=30,
                         help='Number of Epochs to Train for, Default:30')
     Parser.add_argument('--DivTrain', type=int, default=1,
                         help='Factor to reduce Train data by per epoch, Default:1')
@@ -391,8 +388,8 @@ def main():
         LatestFile = None
 
     # Pretty print stats
-    PrettyPrint(NumEpochs, DivTrain, MiniBatchSize,
-                NumTrainSamples, LatestFile)
+    # PrettyPrint(NumEpochs, DivTrain, MiniBatchSize,
+    #             NumTrainSamples, LatestFile)
 
     # Define PlaceHolder variables for Input and Predicted output
     tf.compat.v1.disable_eager_execution()

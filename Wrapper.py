@@ -65,7 +65,7 @@ def SetupAll(BasePath):
     return ImageSize, DataPath
 
 
-def ReadImages(BasePath):
+def ReadImages(DataPath):
     """
     Inputs:
     ImageSize - Size of the Image
@@ -74,12 +74,8 @@ def ReadImages(BasePath):
     I1Combined - I1 image after any standardization and/or cropping/resizing to ImageSize
     I1 - Original I1 image for visualization purposes only
     """
-    # Generate random image
-    RandIdx = random.randint(1, 1000)
-
-    RandImageName = BasePath + str(RandIdx) + '.jpg'
-    I1 = cv2.imread(RandImageName)
-
+    
+    I1 = cv2.imread(DataPath)
     if(I1 is None):
         # OpenCV returns empty list if image is not read!
         print('ERROR: Image I1 cannot be read')
@@ -109,9 +105,8 @@ def ReadImages(BasePath):
     theta = 2 * np.pi * random.random()
     dst = []
     for i in range(len(src)):
-        rand_pertub = [src[i][0] + r *
-                       np.cos(theta), src[i][1]+r*np.sin(theta)]
-        dst.append(rand_pertub)
+            rand_pertub = [src[i][0] + np.random.randint(-r, r), src[i][1]+np.random.randint(-r, r)]
+            dst.append(rand_pertub)
 
     H = cv2.getPerspectiveTransform(np.float32(src), np.float32(dst))
     H_inv = np.linalg.inv(H)
@@ -139,11 +134,8 @@ def TestSupervised(ImgPH, ImageSize, ModelPath, DataPath):
     Predictions written to ./TxtFiles/PredOut.txt
     """
 
-    patch_stack, H4pt, src, dst, img_orig, _, _ = ReadImages(DataPath)
-
-    Img = np.array(patch_stack).reshape(1, patch_size, patch_size, 2)
     # Predict output with forward pass, MiniBatchSize for Test is 1
-    H4pt_pred = Supervised_HomographyModel(ImgPH, ImageSize, 1)
+    pred_H4pt = Supervised_HomographyModel(ImgPH, ImageSize, 1)
 
     # Setup Saver
     Saver = tf.train.Saver()
@@ -152,19 +144,19 @@ def TestSupervised(ImgPH, ImageSize, ModelPath, DataPath):
         Saver.restore(sess, ModelPath)
         print('Number of parameters in this model are %d ' % np.sum(
             [np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()]))
+        H_list = []
+        for i in tqdm(range(np.size(DataPath))):
+            patch_stack, H4pt, src, dst, img_orig, patch1, patch2 = ReadImages(DataPath[i])
+            Img = np.array(patch_stack).reshape(1, patch_size, patch_size, 2)
+            corner = np.array(src).reshape(1, 4, 2)
+            FeedDict = {ImgPH: Img}
+            res = sess.run(pred_H4pt, FeedDict)
 
-        FeedDict = {ImgPH: Img}
-        res = sess.run(H4pt_pred, FeedDict)
+            dst_pred = src + res.reshape(4,2)
+            H = cv2.getPerspectiveTransform(src, dst_pred)
+            H_list.append(H)
 
-    dst_pred = src + res.reshape(4,2)
-
-    cv2.polylines(img_orig,np.int32([src]),True,(255, 0, 0), 3)
-    # cv2.polylines(img_orig,np.int32([dst]),True,(0, 255, 0), 3)
-    cv2.polylines(img_orig,np.int32([dst_pred]),True,(0,0,255), 5)
-    plt.figure()
-    plt.imshow(img_orig)
-    plt.show()
-    H = cv2.getPerspectiveTransform(src, dst_pred)
+    H = np.mean(np.array(H_list), axis=0)
     return H
 
 
@@ -184,25 +176,22 @@ def TestUnsupervised(ImgPH, ImageSize, ModelPath, DataPath):
         Saver.restore(sess, ModelPath)
         print('Number of parameters in this model are %d ' % np.sum(
             [np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()]))
-        patch_stack, H4pt, src, dst, img_orig, patch1, patch2 = ReadImages(
-            DataPath)
-        Img = np.array(patch_stack).reshape(1, patch_size, patch_size, 2)
-        corner = np.array(src).reshape(1, 4, 2)
-        patch1 = np.array(patch1).reshape(1, patch_size, patch_size, 1)
-        patch2 = np.array(patch2).reshape(1, patch_size, patch_size, 1)
-        FeedDict = {ImgPH: Img, CornerPH: corner,
-                    patch1PH: patch1, patch2PH: patch2}
-        res = sess.run(pred_H4pt, FeedDict)
+        H_list = []
+        for i in tqdm(range(np.size(DataPath))):
+            patch_stack, H4pt, src, dst, img_orig, patch1, patch2 = ReadImages(DataPath[i])
+            Img = np.array(patch_stack).reshape(1, patch_size, patch_size, 2)
+            corner = np.array(src).reshape(1, 4, 2)
+            patch1 = np.array(patch1).reshape(1, patch_size, patch_size, 1)
+            patch2 = np.array(patch2).reshape(1, patch_size, patch_size, 1)
+            FeedDict = {ImgPH: Img, CornerPH: corner,
+                        patch1PH: patch1, patch2PH: patch2}
+            res = sess.run(pred_H4pt, FeedDict)
 
-    dst_pred = src + res.reshape(4,2)
+            dst_pred = src + res.reshape(4,2)
+            H = cv2.getPerspectiveTransform(src, dst_pred)
+            H_list.append(H)
 
-    # cv2.polylines(img_orig, np.int32([src]), True, (0, 255, 0), 3)
-    # cv2.polylines(img_orig, np.int32([dst]), True, (255, 0, 0), 5)
-    # cv2.polylines(img_orig, np.int32([src_new]), True, (0, 0, 255), 5)
-    # plt.figure()
-    # plt.imshow(img_orig)
-    # plt.show()
-    H = cv2.getPerspectiveTransform(src, dst_pred)
+    H = np.mean(np.array(H_list), axis=0)
     return H
 
 
@@ -219,12 +208,14 @@ def warpTwoImages(img1, img2, H):
     t = [-xmin, -ymin]
     Ht = np.array([[1, 0, t[0]], [0, 1, t[1]], [0, 0, 1]])  # translate
     result = cv2.warpPerspective(img2, Ht.dot(H), (xmax-xmin, ymax-ymin))
+    # plt.figure(1)
+    # plt.imshow(result)
     result[t[1]:h1+t[1], t[0]:w1+t[0]] = img1
-    plt.figure(2)
-    plt.imshow(img1)
-    plt.figure(3)
-    plt.imshow(img2)
-    plt.show()
+    # plt.figure(2)
+    # plt.imshow(img1)
+    # plt.figure(3)
+    # plt.imshow(result)
+    # plt.show()
     return result
 
 
@@ -240,38 +231,42 @@ def main():
     Parser = argparse.ArgumentParser()
     Parser.add_argument('--ModelPath', dest='ModelPath', default='/home/bernard/CMSC733/proj_1/Phase2/Checkpoints/',
                         help='Path to load latest model from, Default:ModelPath')
-    Parser.add_argument('--BasePath', dest='BasePath', default='/home/bernard/CMSC733/proj_1/Phase2/Data/Val/',
+    Parser.add_argument('--BasePath', dest='BasePath', default="/home/bernard/CMSC733/proj_1/Phase2/Data/P1TestSet/Phase1/TestSet1/",
                         help='Path to load images from, Default:BasePath')
     Parser.add_argument('--LabelsPath', dest='LabelsPath', default='./TxtFiles/LabelsTest.txt',
                         help='Path of labels file, Default:./TxtFiles/LabelsTest.txt')
-    Parser.add_argument('--ModelType', default='Unsup',
+    Parser.add_argument('--ModelType', default='Sup',
                         help='Model type, Supervised or Unsupervised? Choose from Sup and Unsup, Default:Unsup')
     Args = Parser.parse_args()
     ModelType = Args.ModelType
     BasePath = Args.BasePath
     LabelsPath = Args.LabelsPath
-    ModelPath = Args.ModelPath + str(ModelType) + '/19model.ckpt'
+    ModelPath = Args.ModelPath + str(ModelType) + '/29model.ckpt'
     # Setup all needed parameters including file reading
     ImageSize, DataPath = SetupAll(BasePath)
-
     # Define PlaceHolder variables for Input and Predicted output
     ImgPH = tf.placeholder('float', shape=(1, patch_size, patch_size, 2))
     if ModelType == 'Sup':
-        H = TestSupervised(ImgPH, ImageSize, ModelPath, BasePath)
+        H = TestSupervised(ImgPH, ImageSize, ModelPath, DataPath)
     elif ModelType == 'Unsup':
-        
-        H = TestUnsupervised(ImgPH, ImageSize, ModelPath, BasePath)
+        H = TestUnsupervised(ImgPH, ImageSize, ModelPath, DataPath)
     else:
         print("ERROR: Unknown ModelType !!!")
         sys.exit()
-    img_path = "/home/bernard/CMSC733/proj_1/Phase2/Data/P1TestSet/Phase1/TestSet3/"
-    img1 = cv2.imread(img_path + '1.jpg')
-    img2 = cv2.imread(img_path + '2.jpg')
-    img1 = cv2.resize(img1, (320,240), interpolation = cv2.INTER_AREA)
-    img2 = cv2.resize(img2, (320,240), interpolation = cv2.INTER_AREA)
+    # img_path = "/home/bernard/CMSC733/proj_1/Phase2/Data/P1TestSet/Phase1/TestSet3/"
+    # img1 = cv2.imread(img_path + '1.jpg')
+    # img2 = cv2.imread(img_path + '2.jpg')
+    img1 = cv2.imread(DataPath[0])
+    res = cv2.resize(img1, (240, 320), interpolation = cv2.INTER_AREA)
     H_inv = np.linalg.inv(H)
-    res = warpTwoImages(img2, img1, H)
-    cv2.imshow('r', res)
+    for i in range(1, np.size(DataPath)):
+        img2 = cv2.imread(DataPath[i])
+        img2 = cv2.resize(img2, (240, 320), interpolation = cv2.INTER_AREA)
+        res = warpTwoImages(res, img2, H)
+        # res = stitchImagePairs(img1, img2, H)
+        cv2.imshow('r', res)
+        # cv2.waitKey(0)
+    cv2.imshow('r2', res)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 

@@ -98,19 +98,18 @@ def ReadImages(BasePath):
     rand_x = np.random.randint(r, img.shape[1]-r-patch_size)
     rand_y = np.random.randint(r, img.shape[0]-r-patch_size)
     
-    point1 = [rand_x, rand_y]
-    point2 = [rand_x + patch_size, rand_y]
-    point3 = [rand_x + patch_size, rand_y + patch_size]
-    point4 = [rand_x, rand_y + patch_size]
+    point1 = [rand_y, rand_y]
+    point2 = [rand_y + patch_size, rand_x]
+    point3 = [rand_y + patch_size, rand_x + patch_size]
+    point4 = [rand_y, rand_x + patch_size]
     src = [point1, point2, point3, point4]
     src = np.array(src)
     # perform random perturbation in the range [-phi, phi] to the corner points of the patch
     theta = 2 * np.pi * random.random()
     dst = []
     for i in range(len(src)):
-        rand_pertub = [src[i][0] + r *
-                        np.cos(theta), src[i][1]+r*np.sin(theta)]
-        dst.append(rand_pertub)
+            rand_pertub = [src[i][0] + np.random.randint(-r, r), src[i][1]+np.random.randint(-r, r)]
+            dst.append(rand_pertub)
 
     H = cv2.getPerspectiveTransform(np.float32(src), np.float32(dst))
     H_inv = np.linalg.inv(H)
@@ -157,8 +156,8 @@ def TestSupervised(ImgPH, ImageSize, ModelPath, DataPath):
     src_new=src+Predicted.reshape(4,2)
     H4pt_new=dst-src_new
     
-    cv2.polylines(img_orig,np.int32([src]),True,(0,255,0), 3)
-    cv2.polylines(img_orig,np.int32([dst]),True,(255,0,0), 5)
+    cv2.polylines(img_orig,np.int32([src]),True,(255,0,0), 3)
+    cv2.polylines(img_orig,np.int32([dst]),True,(0, 255,0), 5)
     cv2.polylines(img_orig,np.int32([src_new]),True,(0,0,255), 5)
     plt.figure()
     plt.imshow(img_orig)
@@ -233,7 +232,7 @@ def main():
                         help='Model type, Supervised or Unsupervised? Choose from Sup and Unsup, Default:Unsup')
     Args = Parser.parse_args()
     ModelType = Args.ModelType
-    ModelPath = Args.ModelPath + str(ModelType)+ '/19model.ckpt'
+    ModelPath = Args.ModelPath + str(ModelType)+ '/29model.ckpt'
     BasePath = Args.BasePath
     LabelsPath = Args.LabelsPath
 
