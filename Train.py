@@ -92,7 +92,6 @@ def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize, ModelType):
     CornerBatch = []
     patch1Batch = []
     patch2Batch = []
-    imgs = []
     ImageNum = 0
     while ImageNum < MiniBatchSize:
         # Generate random image
@@ -105,7 +104,7 @@ def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize, ModelType):
         # Add any standardization or data augmentation here!
         ##########################################################
         img = np.float32(cv2.imread(RandImageName))
-        img = cv2.resize(img, (240, 320))
+        img = cv2.resize(img, (320, 240))
         # I1 = img
         # if(ImageSize[2] == 3):
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -141,10 +140,7 @@ def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize, ModelType):
         img_warp = cv2.warpPerspective(
             img_gray, H_inv, (img_gray.shape[1], img_gray.shape[0]))
         patch_1 = img_gray[rand_y:rand_y+patch_size, rand_x:rand_x+patch_size]
-        # patch_2 = img_warp[rand_y:rand_y+patch_size, rand_x:rand_x+patch_size]
-        patch_2 = img_warp[src[0][0]:src[2][0], src[0][1]:src[2][1]]
-        # patch_1 = (patch_1 - np.mean(patch_1))/255
-        # patch_2 = (patch_2 - np.mean(patch_2))/255
+        patch_2 = img_warp[rand_y:rand_y+patch_size, rand_x:rand_x+patch_size]
         patch_stack = np.dstack((patch_1, patch_2))
         H4pt = np.subtract(dst, src)
         StackBatch.append(patch_stack)
@@ -155,12 +151,10 @@ def GenerateBatch(BasePath, DirNamesTrain, ImageSize, MiniBatchSize, ModelType):
         patch2Batch.append(np.float32(
             patch_2.reshape(patch_size, patch_size, 1)))
 
-        imgs.append(img_gray.reshape(img_gray.shape[1], img_gray.shape[0], 1))
-    # patch_indices = getPatchIndices(src)
     if ModelType == 'Sup':
         return StackBatch, LabelBatch
     elif ModelType == 'Unsup':
-        return StackBatch, CornerBatch, patch1Batch, patch2Batch, imgs
+        return StackBatch, CornerBatch, patch1Batch, patch2Batch
 
 
 def PrettyPrint(NumEpochs, DivTrain, MiniBatchSize, NumTrainSamples, LatestFile):
@@ -207,10 +201,6 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
             MiniBatchSize, patch_size, patch_size, 1))
         I2PH = tf.placeholder(tf.float32, shape=(
             MiniBatchSize, patch_size, patch_size, 1))
-        imgPH = tf.placeholder(tf.float32, shape=(
-            MiniBatchSize, 320, 240, 1))
-        patchIndicesPH = tf.placeholder(tf.int32, shape=(
-            MiniBatchSize, patch_size, patch_size, 2))
         pred_I2, patch2, H4pt = Unsupervised_HomographyModel(
             ImgPH, CornerPH, I1PH, I2PH, ImageSize, MiniBatchSize)
     else:
@@ -223,8 +213,7 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
         ###############################################
         if ModelType == 'Sup':
             # L2-loss
-            loss = tf.sqrt(tf.reduce_sum(
-                (tf.squared_difference(H4pt, LabelPH))))
+            loss = tf.sqrt(tf.reduce_sum((tf.squared_difference(H4pt, LabelPH))))
         elif ModelType == 'Unsup':
             loss = tf.reduce_mean(tf.abs(pred_I2 - patch2))
 
@@ -232,11 +221,8 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
         ###############################################
         # Fill your optimizer of choice here!
         ###############################################
-        # if ModelType == 'Sup':
-        #     Optimizer = tf.train.AdamOptimizer(learning_rate=1e-3).minimize(loss)
-        # elif ModelType == 'Unsup':
-        #     Optimizer = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(loss)
         Optimizer = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(loss)
+        
 
     # Tensorboard
     # Create a summary to monitor loss tensor
@@ -306,7 +292,7 @@ def TrainOperation(ImgPH, LabelPH, DirNamesTrain, TrainLabels, NumTrainSamples, 
                     NumTrainSamples/MiniBatchSize/DivTrain)
                 appendLoss = []
                 for PerEpochCounter in tqdm(range(NumIterationsPerEpoch)):
-                    StackBatch, CornerBatch, patch1Batch, patch2Batch, imgs = GenerateBatch(
+                    StackBatch, CornerBatch, patch1Batch, patch2Batch = GenerateBatch(
                         BasePath, DirNamesTrain, ImageSize, MiniBatchSize, ModelType)
                     FeedDict = {ImgPH: StackBatch, CornerPH: CornerBatch,
                                 I1PH: patch1Batch, I2PH: patch2Batch}
@@ -387,6 +373,8 @@ def main():
     else:
         LatestFile = None
 
+    if ModelType == "Sup":
+        NumTrainSamples *= 2
     # Pretty print stats
     # PrettyPrint(NumEpochs, DivTrain, MiniBatchSize,
     #             NumTrainSamples, LatestFile)

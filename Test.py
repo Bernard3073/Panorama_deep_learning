@@ -156,7 +156,7 @@ def TestSupervised(ImgPH, ImageSize, ModelPath, DataPath):
     src_new=src+Predicted.reshape(4,2)
     H4pt_new=dst-src_new
     
-    cv2.polylines(img_orig,np.int32([src]),True,(255,0,0), 3)
+    # cv2.polylines(img_orig,np.int32([src]),True,(255,0,0), 3)
     cv2.polylines(img_orig,np.int32([dst]),True,(0, 255,0), 5)
     cv2.polylines(img_orig,np.int32([src_new]),True,(0,0,255), 5)
     plt.figure()
